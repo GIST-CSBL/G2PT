@@ -36,9 +36,21 @@ class DrugResponseModel(Genotype2PhenotypeTransformer):
 
     def forward(self, genotype_dict, compound, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward,
                 sys2gene_mask, comp2sys_masks=None, sys2cell=True, cell2sys=True, sys2gene=True):
-        batch_size = compound.size(0)
+
+        system_embedding, gene_embedding = self.get_perturbed_embedding(genotype_dict,
+                                                                        nested_hierarchical_masks_forward,
+                                                                        nested_hierarchical_masks_backward, sys2gene,
+                                                                        sys2cell, cell2sys, sys2gene)
+
+        compound_embedding = self.get_compound_embedding(compound, unsqueeze=True)
+        prediction = self.prediction(self.drug_response_predictor, compound_embedding, system_embedding, gene_embedding)
+        return prediction
+
+    def get_perturbed_embedding(self, genotype_dict, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward,
+                                sys2gene_mask, sys2cell=True, cell2sys=True, sys2gene=True):
         system_embedding, mutation_effect = self.get_mut2system(genotype_dict)
         system_embedding = system_embedding[:, :-1, :]
+        batch_size = system_embedding.size(0)
         #print(system_embedding[0, :, 0] == system_embedding[1, :, 0])
         if sys2cell:
             system_embedding = self.get_sys2sys(system_embedding, nested_hierarchical_masks_forward, direction='forward', return_updates=False)
@@ -47,10 +59,8 @@ class DrugResponseModel(Genotype2PhenotypeTransformer):
         gene_embedding = self.gene_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, :-1, :]
         if sys2gene:
             gene_embedding = self.get_sys2gene(system_embedding, gene_embedding, sys2gene_mask)
-        #print(system_embedding[0, :, 0] == system_embedding[1, :, 0])
-        compound_embedding = self.get_compound_embedding(compound, unsqueeze=True)
-        prediction = self.prediction(self.drug_response_predictor, compound_embedding, system_embedding, gene_embedding)
-        return prediction
+
+        return system_embedding, gene_embedding
 
     def get_mut2system(self, genotype_dict):
         sys_indices, mut_effects = [], []
