@@ -11,7 +11,7 @@ import copy
 from transformers import get_linear_schedule_with_warmup
 from src.utils.trainer import CCCLoss
 from src.utils.data import move_to
-from src.utils.trainer.loss import spearman
+from src.utils.trainer.loss import SpearmanLoss
 import copy
 
 
@@ -35,8 +35,8 @@ class DrugResponseFewShotLearner(object):
         self.train_drug_response_dataloader = train_drug_response_dataloader
         self.few_shot_train_drug_response_dataloader = few_shot_train_drug_response_dataloader
         self.few_shot_test_drug_response_dataloader = few_shot_test_drug_response_dataloader
-        self.ccc_loss = CCCLoss()
-        self.optimizer = optim.SGD(filter(lambda p: p.requires_grad, self.few_shot_model.parameters()),
+        self.spearman_loss = CCCLoss()#SpearmanLoss(regularization_strength=args.l2_lambda, device=self.device)
+        self.optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.few_shot_model.parameters()),
                                      lr=args.lr, weight_decay=0)
         self.nested_subtrees_forward = self.train_drug_response_dataloader.dataset.tree_parser.get_nested_subtree_mask(
             args.subtree_order, direction='forward')
@@ -60,7 +60,7 @@ class DrugResponseFewShotLearner(object):
         with torch.no_grad():
             for i, batch in enumerate(dataloader_with_tqdm):
                 batch = move_to(batch, self.device)
-                perturbed_systems, perturbed_genes = model.get_perturbed_embedding(batch['genotype'], batch['drug'],
+                perturbed_systems, perturbed_genes = model.get_perturbed_embedding(batch['genotype'],
                                                                                    self.nested_subtrees_forward,
                                                                                    self.nested_subtrees_backward,
                                                                                    self.system2gene_mask,
@@ -81,7 +81,7 @@ class DrugResponseFewShotLearner(object):
             gc.collect()
             torch.cuda.empty_cache()
             if (epoch % self.args.val_step)==0 & (epoch != 0):
-                performance = self.evaluate(self.few_shot_test_drug_response_dataloader, epoch+1, name="Validation")
+                performance = self.evaluate(self.few_shot_test_drug_response_dataloader, epoch+1, name="Validation", train_predictor=False, invert_prediction=True)
                 if performance > best_performance:
                     self.best_model = copy.deepcopy(self.few_shot_model).to('cpu')
                 torch.cuda.empty_cache()
@@ -92,16 +92,16 @@ class DrugResponseFewShotLearner(object):
             #self.lr_scheduler.step()
 
 
-    def evaluate(self, dataloader, train_predictor, epoch, name="Validation"):
+    def evaluate(self, dataloader, epoch, name="Validation", train_predictor=False, invert_prediction=True):
         trues = []
         results = []
         dataloader_with_tqdm = tqdm(dataloader)
-
+        self.few_shot_model.eval()
         with torch.no_grad():
             for i, batch in enumerate(dataloader_with_tqdm):
                 batch = move_to(batch, self.device)
                 query_sys_embedding, query_gene_embedding, = self.train_drug_response_model.get_perturbed_embedding(
-                    batch['genotype'], batch['drug'],
+                    batch['genotype'],
                     self.nested_subtrees_forward, self.nested_subtrees_backward, self.system2gene_mask,
                     sys2cell=self.args.sys2cell,
                     cell2sys=self.args.cell2sys,
@@ -117,28 +117,37 @@ class DrugResponseFewShotLearner(object):
                 if train_predictor:
                     predictor = self.few_shot_model.predictor
                 else:
-                    predictor = self.train_drug_response_model.predictor
+                    predictor = self.train_drug_response_model.drug_response_predictor
 
-                prediction = self.train_drug_response_model(predictor, compound_embedding, updated_sys_embedding,
+                prediction = self.train_drug_response_model.prediction(predictor, compound_embedding, updated_sys_embedding,
                                                             updated_gene_embedding)
-                trues.append(batch['response'].detach().cpu().numpy())
+                if invert_prediction:
+                    prediction = 1 - prediction
+                trues.append((batch['response_mean'] + batch['response_residual']).detach().cpu().numpy())
                 prediction = prediction.detach().cpu().numpy()
                 results.append(prediction)
                 dataloader_with_tqdm.set_description("%s epoch: %d" % (name, epoch))
         trues = np.concatenate(trues)
         results = np.concatenate(results)[:, 0]
+        print(trues[:10])
+        print(results[:10])
         r_square = metrics.r2_score(trues, results)
         spearman = spearmanr(trues, results)
         print("R_square: ", r_square)
         print("Spearman Rho: ", spearman)
-        return r_square[0]
+        return spearman[0]
 
-    def iter_minibatches(self, dataloader, epoch, name="", train_predictor=False):
+    def train_epoch(self, epoch):
+        self.few_shot_model.train()
+        self.iter_minibatches(self.few_shot_train_drug_response_dataloader, epoch, name="Batch", train_predictor=False, invert_prediction=True)
+
+
+    def iter_minibatches(self, dataloader, epoch, name="", train_predictor=False, invert_prediction=True):
         mean_spearman_loss = 0.
         dataloader_with_tqdm = tqdm(dataloader)
         for i, batch in enumerate(dataloader_with_tqdm):
             batch = move_to(batch, self.device)
-            query_sys_embedding, query_gene_embedding, = self.train_drug_response_model.get_perturbed_embedding(batch['genotype'], batch['drug'],
+            query_sys_embedding, query_gene_embedding, = self.train_drug_response_model.get_perturbed_embedding(batch['genotype'],
                                                            self.nested_subtrees_forward, self.nested_subtrees_backward, self.system2gene_mask,
                                                                sys2cell=self.args.sys2cell,
                                                                cell2sys=self.args.cell2sys,
@@ -150,10 +159,12 @@ class DrugResponseFewShotLearner(object):
             if train_predictor:
                 predictor = self.few_shot_model.predictor
             else:
-                predictor = self.train_drug_response_model.predictor
+                predictor = self.train_drug_response_model.drug_response_predictor
 
-            prediction = self.train_drug_response_model(predictor, compound_embedding, updated_sys_embedding, updated_gene_embedding)
-            spearman_loss = spearman((batch['response']).to(torch.float32), prediction[:, 0], regularization_strength=self.args.l2_lambda)
+            prediction = self.train_drug_response_model.prediction(predictor, compound_embedding, updated_sys_embedding, updated_gene_embedding)
+            if invert_prediction:
+                prediction = 1 - prediction
+            spearman_loss = self.spearman_loss((batch['response_mean'] + batch['response_residual']).to(torch.float32), prediction)
             loss = spearman_loss
             self.optimizer.zero_grad()
             loss.backward()

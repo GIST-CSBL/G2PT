@@ -23,26 +23,29 @@ class CCCLoss(torch.nn.Module):
         ccc = 1 - ccc
         return ccc
 
-def corrcoef(target, pred):
-    # np.corrcoef in torch from @mdo
-    # https://forum.numer.ai/t/custom-loss-functions-for-xgboost-using-pytorch/960
-    pred_n = pred - pred.mean()
-    target_n = target - target.mean()
-    pred_n = pred_n / pred_n.norm()
-    target_n = target_n / target_n.norm()
-    return (pred_n * target_n).sum()
+class SpearmanLoss(torch.nn.Module):
+
+    def __init__(self, regularization='l2', regularization_strength=1.0, device='cpu'):
+        super(SpearmanLoss, self).__init__()
+        self.regularization = regularization
+        self.regularization_strength = regularization_strength
+        self.device = device
+
+    def corrcoef(self, target, pred):
+        # np.corrcoef in torch from @mdo
+        # https://forum.numer.ai/t/custom-loss-functions-for-xgboost-using-pytorch/960
+        pred_n = pred - pred.mean()
+        target_n = target - target.mean()
+        pred_n = pred_n / pred_n.norm()
+        target_n = target_n / target_n.norm()
+        return (pred_n * target_n).sum()
 
 
-def spearman(
-    target,
-    pred,
-    regularization="l2",
-    regularization_strength=1.0,
-):
-    # fast_soft_sort uses 1-based indexing, divide by len to compute percentage of rank
-    pred = soft_rank(
-        pred,
-        regularization=regularization,
-        regularization_strength=regularization_strength,
-    )
-    return corrcoef(target, pred / pred.shape[-1])
+    def forward(self, target, pred):
+        # fast_soft_sort uses 1-based indexing, divide by len to compute percentage of rank
+        pred = soft_rank(
+            pred.cpu(),
+            regularization=self.regularization,
+            regularization_strength=self.regularization_strength,
+        ).to(self.device)
+        return self.corrcoef(target, pred / pred.shape[-1])

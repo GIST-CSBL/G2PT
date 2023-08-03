@@ -102,10 +102,10 @@ def main():
     train_dataset = pd.read_csv(args.train, header=None, sep='\t')
     device = torch.device("cuda:%d" % args.gpu)
     drug_response_model = torch.load(args.model, map_location=device)
-    few_shot_model = DrugResponseFewShotTransformer(args.hidden_dims, n_heads=1)
+    few_shot_model = DrugResponseFewShotTransformer(args.hidden_dims, n_heads=8)
 
     print("Summary of trainable parameters")
-    count_parameters(drug_response_model)
+    count_parameters(few_shot_model)
     if args.sys2cell:
         print("Model will use Sys2Cell")
     if args.cell2sys:
@@ -113,6 +113,7 @@ def main():
     if args.sys2gene:
         print("Model will use Sys2Gene")
 
+    args.genotypes = {genotype.split(":")[0]: genotype.split(":")[1] for genotype in args.genotypes.split(',')}
     drug_response_dataset = DrugResponseDataset(train_dataset, args.cell2id, args.genotypes, compound_encoder,
                                                 tree_parser)
     drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder)
@@ -125,7 +126,7 @@ def main():
 
     few_shot_train = pd.read_csv(args.few_shot_train, header=None, sep='\t')#few_shot_dataset.iloc[:args.n_shot]
     few_shot_test = pd.read_csv(args.few_shot_test, header=None, sep='\t')#few_shot_dataset.iloc[args.n_shot:]
-
+    args.few_shot_genotypes = {genotype.split(":")[0]: genotype.split(":")[1] for genotype in args.few_shot_genotypes.split(',')}
     few_shot_train_drug_response_dataset = DrugResponseDataset(few_shot_train, args.few_shot_cell2id, args.few_shot_genotypes, compound_encoder, tree_parser)
     few_shot_train_response_dataloader = DataLoader(few_shot_train_drug_response_dataset, shuffle=False, batch_size=args.batch_size,
                                            num_workers=args.jobs, collate_fn=drug_response_collator)
@@ -139,3 +140,5 @@ def main():
     few_shot_learner = DrugResponseFewShotLearner(drug_response_model, few_shot_model, train_response_dataloader, few_shot_train_response_dataloader, few_shot_test_response_dataloader, device, args=args)
     few_shot_learner.train_few_shot(args.epochs, args.out)
 
+if __name__ == '__main__':
+    main()
