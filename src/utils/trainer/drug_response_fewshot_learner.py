@@ -11,6 +11,7 @@ import copy
 from transformers import get_linear_schedule_with_warmup
 from src.utils.trainer import CCCLoss
 from src.utils.data import move_to
+from src.utils.trainer.loss import spearman
 import copy
 
 
@@ -133,7 +134,7 @@ class DrugResponseFewShotLearner(object):
         return r_square[0]
 
     def iter_minibatches(self, dataloader, epoch, name="", train_predictor=False):
-        mean_ccc_loss = 0.
+        mean_spearman_loss = 0.
         dataloader_with_tqdm = tqdm(dataloader)
         for i, batch in enumerate(dataloader_with_tqdm):
             batch = move_to(batch, self.device)
@@ -152,11 +153,11 @@ class DrugResponseFewShotLearner(object):
                 predictor = self.train_drug_response_model.predictor
 
             prediction = self.train_drug_response_model(predictor, compound_embedding, updated_sys_embedding, updated_gene_embedding)
-            ccc_loss = self.ccc_loss((batch['response']).to(torch.float32), prediction[:, 0])
-            loss = ccc_loss
+            spearman_loss = spearman((batch['response']).to(torch.float32), prediction[:, 0], regularization_strength=self.args.l2_lambda)
+            loss = spearman_loss
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
-            mean_ccc_loss += float(ccc_loss)
+            mean_spearman_loss += float(spearman_loss)
 
-            dataloader_with_tqdm.set_description("%s Train epoch: %d, Compound loss %.3f" % ( name, epoch, mean_ccc_loss / (i + 1)))
+            dataloader_with_tqdm.set_description("%s Train epoch: %d, loss %.3f" % ( name, epoch, mean_spearman_loss / (i + 1)))

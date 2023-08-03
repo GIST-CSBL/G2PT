@@ -25,7 +25,7 @@ from src.model import DrugResponseModel, DrugResponseFewShotTransformer
 from src.utils.data import CompoundEncoder
 from src.utils.tree import MutTreeParser
 from src.utils.data.dataset import DrugResponseDataset, DrugResponseCollator, DrugResponseSampler, DrugBatchSampler, DrugDataset, CellLineBatchSampler
-from src.utils.trainer import DrugResponseTrainer, DrugTrainer, DrugResponseFineTuner
+from src.utils.trainer.drug_response_fewshot_learner import DrugResponseFewShotLearner
 import numpy as np
 import torch.nn as nn
 
@@ -66,9 +66,12 @@ def main():
     parser.add_argument('--cuda', help='Specify GPU', type=int, default=None)
     parser.add_argument('--gene2id', help='Gene to ID mapping file', type=str)
 
+
     parser.add_argument('--cell2id', help='Cell to ID mapping file', type=str)
     parser.add_argument('--genotypes', help='Mutation information for cell lines', type=str)
 
+    parser.add_argument('--few_shot_train', help='Cell to ID mapping file', type=str)
+    parser.add_argument('--few_shot_test', help='Cell to ID mapping file', type=str)
     parser.add_argument('--few_shot_cell2id', help='Cell to ID mapping file', type=str)
     parser.add_argument('--few_shot_genotypes', help='Mutation information for cell lines', type=str)
 
@@ -116,12 +119,12 @@ def main():
     train_response_dataloader = DataLoader(drug_response_dataset, shuffle=False, batch_size=args.batch_size,
                                               num_workers=args.jobs, collate_fn=drug_response_collator)
 
-    few_shot_dataset = pd.read_csv(args.few_shot, header=None, sep='\t')
+    #few_shot_dataset = pd.read_csv(args.few_shot, header=None, sep='\t')
 
     #few_shot_df = pd.read_csv()#.sample(frac=1)
 
-    few_shot_train = few_shot_dataset.iloc[:args.n_shot]
-    few_shot_test = few_shot_dataset.iloc[args.n_shot:]
+    few_shot_train = pd.read_csv(args.few_shot_train, header=None, sep='\t')#few_shot_dataset.iloc[:args.n_shot]
+    few_shot_test = pd.read_csv(args.few_shot_test, header=None, sep='\t')#few_shot_dataset.iloc[args.n_shot:]
 
     few_shot_train_drug_response_dataset = DrugResponseDataset(few_shot_train, args.few_shot_cell2id, args.few_shot_genotypes, compound_encoder, tree_parser)
     few_shot_train_response_dataloader = DataLoader(few_shot_train_drug_response_dataset, shuffle=False, batch_size=args.batch_size,
@@ -132,4 +135,7 @@ def main():
     few_shot_test_response_dataloader = DataLoader(few_shot_test_drug_response_dataset, shuffle=False,
                                                     batch_size=args.batch_size,
                                                     num_workers=args.jobs, collate_fn=drug_response_collator)
+
+    few_shot_learner = DrugResponseFewShotLearner(drug_response_model, few_shot_model, train_response_dataloader, few_shot_train_response_dataloader, few_shot_test_response_dataloader, device, args=args)
+    few_shot_learner.train_few_shot(args.epochs, args.out)
 
