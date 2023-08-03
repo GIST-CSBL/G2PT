@@ -35,7 +35,8 @@ class DrugResponseFewShotLearner(object):
         self.train_drug_response_dataloader = train_drug_response_dataloader
         self.few_shot_train_drug_response_dataloader = few_shot_train_drug_response_dataloader
         self.few_shot_test_drug_response_dataloader = few_shot_test_drug_response_dataloader
-        self.spearman_loss = CCCLoss()#SpearmanLoss(regularization_strength=args.l2_lambda, device=self.device)
+        self.loss = nn.L1Loss()#CCCLoss()#SpearmanLoss(regularization_strength=args.l2_lambda, device=self.device)
+        self.ccc_loss = CCCLoss()
         self.optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.few_shot_model.parameters()),
                                      lr=args.lr, weight_decay=0)
         self.nested_subtrees_forward = self.train_drug_response_dataloader.dataset.tree_parser.get_nested_subtree_mask(
@@ -49,6 +50,8 @@ class DrugResponseFewShotLearner(object):
         train_system_embedding, train_gene_embedding = self.get_train_embedding(self.train_drug_response_model, self.train_drug_response_dataloader)
         self.train_system_embedding = train_system_embedding
         self.train_gene_embedding = train_gene_embedding
+        self.l1_lambda = args.l1_lambda
+        self.l2_lambda = args.l2_lambda
 
     def get_train_embedding(self, model, dataloader):
         dataloader_with_tqdm = tqdm(dataloader)
@@ -90,6 +93,10 @@ class DrugResponseFewShotLearner(object):
                     output_path_epoch = output_path + ".%d"%epoch
                     torch.save(self.few_shot_model, output_path_epoch)
             #self.lr_scheduler.step()
+
+    def train_epoch(self, epoch):
+        self.few_shot_model.train()
+        self.iter_minibatches(self.few_shot_train_drug_response_dataloader, epoch, name="Batch", train_predictor=False, invert_prediction=True)
 
 
     def evaluate(self, dataloader, epoch, name="Validation", train_predictor=False, invert_prediction=True):
@@ -137,13 +144,9 @@ class DrugResponseFewShotLearner(object):
         print("Spearman Rho: ", spearman)
         return spearman[0]
 
-    def train_epoch(self, epoch):
-        self.few_shot_model.train()
-        self.iter_minibatches(self.few_shot_train_drug_response_dataloader, epoch, name="Batch", train_predictor=False, invert_prediction=True)
-
-
     def iter_minibatches(self, dataloader, epoch, name="", train_predictor=False, invert_prediction=True):
-        mean_spearman_loss = 0.
+        mean_ccc_loss = 0.
+        mean_l1_loss = 0.
         dataloader_with_tqdm = tqdm(dataloader)
         for i, batch in enumerate(dataloader_with_tqdm):
             batch = move_to(batch, self.device)
@@ -164,11 +167,20 @@ class DrugResponseFewShotLearner(object):
             prediction = self.train_drug_response_model.prediction(predictor, compound_embedding, updated_sys_embedding, updated_gene_embedding)
             if invert_prediction:
                 prediction = 1 - prediction
-            spearman_loss = self.spearman_loss((batch['response_mean'] + batch['response_residual']).to(torch.float32), prediction)
-            loss = spearman_loss
+            prediction = prediction[:, 0]
+            l1_loss = self.loss((batch['response_mean'] + batch['response_residual']).to(torch.float32), prediction)
+            ccc_loss = self.ccc_loss((batch['response_mean'] + batch['response_residual']).to(torch.float32), prediction)
+            l1_reg = 0
+            l2_reg = 0
+            for param in self.few_shot_model.parameters():
+                l1_reg += torch.norm(param, p=1)
+                l2_reg += torch.norm(param, p=2)
+
+            loss =  ccc_loss + self.l1_lambda * l1_reg + self.l2_lambda * l2_reg
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
-            mean_spearman_loss += float(spearman_loss)
+            mean_l1_loss += float(l1_loss)
+            mean_ccc_loss += float(ccc_loss)
 
-            dataloader_with_tqdm.set_description("%s Train epoch: %d, loss %.3f" % ( name, epoch, mean_spearman_loss / (i + 1)))
+            dataloader_with_tqdm.set_description("%s Train epoch: %d, l1 loss: %.3f , ccc loss: %.3f" % ( name, epoch, mean_l1_loss / (i + 1), mean_ccc_loss / (i + 1)))
