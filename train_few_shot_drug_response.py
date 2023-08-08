@@ -102,7 +102,7 @@ def main():
     train_dataset = pd.read_csv(args.train, header=None, sep='\t')
     device = torch.device("cuda:%d" % args.gpu)
     drug_response_model = torch.load(args.model, map_location=device)
-    few_shot_model = DrugResponseFewShotTransformer(args.hidden_dims, n_heads=1)
+    few_shot_model = DrugResponseFewShotTransformer(args.hidden_dims, n_heads=8, dropout=args.dropout)
 
     print("Summary of trainable parameters")
     count_parameters(few_shot_model)

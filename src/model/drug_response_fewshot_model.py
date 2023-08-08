@@ -6,12 +6,12 @@ from src.model.hierarchical_transformer import FewShotAttention
 
 class DrugResponseFewShotTransformer(nn.Module):
 
-    def __init__(self, hidden_dims, n_heads=1):
+    def __init__(self, hidden_dims, n_heads=1, dropout=0.5):
         super(DrugResponseFewShotTransformer, self).__init__()
         self.hidden_dims = hidden_dims
         self.n_heads = n_heads
-        self.few_shot_attention_sys = FewShotAttention(self.hidden_dims, self.n_heads)
-        self.few_shot_attention_gene = FewShotAttention(self.hidden_dims, self.n_heads)
+        self.few_shot_attention = FewShotAttention(self.hidden_dims, self.n_heads, dropout=dropout)
+        #self.few_shot_attention_gene = FewShotAttention(self.hidden_dims, self.n_heads, dropout=dropout)
         self.predictor = nn.Linear(hidden_dims * 2, 1)
 
 
@@ -27,12 +27,12 @@ class DrugResponseFewShotTransformer(nn.Module):
 
         sys_transformed = []
         for i in range(n_sys):
-            embedding_result, attention, score = self.few_shot_attention_sys(query_sys_embedding[:, :, i, :], key_sys_embedding[:, :, i, :], key_sys_embedding[:, :, i, :])
+            embedding_result, attention, score = self.few_shot_attention(query_sys_embedding[:, :, i, :], key_sys_embedding[:, :, i, :], key_sys_embedding[:, :, i, :])
             sys_transformed.append(embedding_result)
 
         gene_transformed = []
         for j in range(n_gene):
-            embedding_result, attention, score = self.few_shot_attention_gene(query_gene_embedding[:, :, j, :], key_gene_embedding[:, :, j, :], key_gene_embedding[:, :, j, :])
+            embedding_result, attention, score = self.few_shot_attention(query_gene_embedding[:, :, j, :], key_gene_embedding[:, :, j, :], key_gene_embedding[:, :, j, :])
             gene_transformed.append(embedding_result)
 
         sys_transformed = torch.stack(sys_transformed, dim=2)[:, 0, :, :]

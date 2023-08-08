@@ -36,7 +36,7 @@ class DrugResponseFewShotLearner(object):
         self.few_shot_train_drug_response_dataloader = few_shot_train_drug_response_dataloader
         self.few_shot_test_drug_response_dataloader = few_shot_test_drug_response_dataloader
         self.loss = nn.L1Loss()#CCCLoss()#SpearmanLoss(regularization_strength=args.l2_lambda, device=self.device)
-        self.ccc_loss = CCCLoss()
+        self.ccc_loss = CCCLoss(mean_diff=True)
         self.optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.few_shot_model.parameters()),
                                      lr=args.lr, weight_decay=0)
         self.nested_subtrees_forward = self.train_drug_response_dataloader.dataset.tree_parser.get_nested_subtree_mask(
@@ -52,6 +52,43 @@ class DrugResponseFewShotLearner(object):
         self.train_gene_embedding = train_gene_embedding
         self.l1_lambda = args.l1_lambda
         self.l2_lambda = args.l2_lambda
+        self.invert_prediction = True
+        self.train_predictor = False
+        print("Corr for orig dataset")
+        self.evaluate_original_model(self.train_drug_response_model, self.train_drug_response_dataloader, False)
+        print("Corr for few-shot test dataset")
+        self.evaluate_original_model(self.train_drug_response_model, self.few_shot_test_drug_response_dataloader, self.invert_prediction)
+
+    def evaluate_original_model(self, model, dataloader, invert_prediction):
+        trues = []
+        results = []
+        dataloader_with_tqdm = tqdm(dataloader)
+
+        test_df = dataloader.dataset.drug_response_df.reset_index()
+        model.to(self.device)
+        model.eval()
+        with torch.no_grad():
+            for i, batch in enumerate(dataloader_with_tqdm):
+                trues.append(batch['response_mean'] + batch['response_residual'])
+                batch = move_to(batch, self.device)
+                prediction = model(batch['genotype'], batch['drug'],
+                                                self.nested_subtrees_forward, self.nested_subtrees_backward, self.system2gene_mask,
+                                                sys2cell=self.args.sys2cell,
+                                                cell2sys=self.args.cell2sys,
+                                                sys2gene=self.args.sys2gene)
+                prediction = prediction.detach().cpu().numpy()
+                if invert_prediction:
+                    prediction = 1 / prediction
+                results.append(prediction)
+        trues = np.concatenate(trues)
+        results = np.concatenate(results)[:, 0]
+        pearson = pearsonr(trues, results)
+        r_square = metrics.r2_score(trues, results)
+        spearman = spearmanr(trues, results)
+        print("R_square: ", r_square)
+        print("Pearson r: ", pearson)
+        print("Spearman Rho: ", spearman)
+
 
     def get_train_embedding(self, model, dataloader):
         dataloader_with_tqdm = tqdm(dataloader)
@@ -76,6 +113,7 @@ class DrugResponseFewShotLearner(object):
         perturbed_genes_total = torch.cat(perturbed_genes_total, dim=0)
         return perturbed_systems_total, perturbed_genes_total
 
+
     def train_few_shot(self, epochs, output_path):
         self.best_model = self.few_shot_model
         best_performance = 0
@@ -84,7 +122,7 @@ class DrugResponseFewShotLearner(object):
             gc.collect()
             torch.cuda.empty_cache()
             if (epoch % self.args.val_step)==0 & (epoch != 0):
-                performance = self.evaluate(self.few_shot_test_drug_response_dataloader, epoch+1, name="Validation", train_predictor=False, invert_prediction=True)
+                performance = self.evaluate(self.few_shot_test_drug_response_dataloader, epoch+1, name="Validation", train_predictor=self.train_predictor, invert_prediction=self.invert_prediction)
                 if performance > best_performance:
                     self.best_model = copy.deepcopy(self.few_shot_model).to('cpu')
                 torch.cuda.empty_cache()
@@ -96,7 +134,7 @@ class DrugResponseFewShotLearner(object):
 
     def train_epoch(self, epoch):
         self.few_shot_model.train()
-        self.iter_minibatches(self.few_shot_train_drug_response_dataloader, epoch, name="Batch", train_predictor=False, invert_prediction=True)
+        self.iter_minibatches(self.few_shot_train_drug_response_dataloader, epoch, name="Batch", train_predictor=self.train_predictor, invert_prediction=self.invert_prediction)
 
 
     def evaluate(self, dataloader, epoch, name="Validation", train_predictor=False, invert_prediction=True):
@@ -129,7 +167,7 @@ class DrugResponseFewShotLearner(object):
                 prediction = self.train_drug_response_model.prediction(predictor, compound_embedding, updated_sys_embedding,
                                                             updated_gene_embedding)
                 if invert_prediction:
-                    prediction = 1 - prediction
+                    prediction = 1 / prediction
                 trues.append((batch['response_mean'] + batch['response_residual']).detach().cpu().numpy())
                 prediction = prediction.detach().cpu().numpy()
                 results.append(prediction)
@@ -138,9 +176,11 @@ class DrugResponseFewShotLearner(object):
         results = np.concatenate(results)[:, 0]
         print(trues[:10])
         print(results[:10])
+        pearson = pearsonr(trues, results)
         r_square = metrics.r2_score(trues, results)
         spearman = spearmanr(trues, results)
         print("R_square: ", r_square)
+        print("Pearson r: ", pearson)
         print("Spearman Rho: ", spearman)
         return spearman[0]
 
@@ -166,12 +206,14 @@ class DrugResponseFewShotLearner(object):
 
             prediction = self.train_drug_response_model.prediction(predictor, compound_embedding, updated_sys_embedding, updated_gene_embedding)
             if invert_prediction:
-                prediction = 1 - prediction
+                prediction = 1 / prediction
+            #print((batch['response_mean'] + batch['response_residual']).to(torch.float32), prediction[:, 0])
             prediction = prediction[:, 0]
             l1_loss = self.loss((batch['response_mean'] + batch['response_residual']).to(torch.float32), prediction)
             ccc_loss = self.ccc_loss((batch['response_mean'] + batch['response_residual']).to(torch.float32), prediction)
             l1_reg = 0
             l2_reg = 0
+
             for param in self.few_shot_model.parameters():
                 l1_reg += torch.norm(param, p=1)
                 l2_reg += torch.norm(param, p=2)

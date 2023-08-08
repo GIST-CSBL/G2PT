@@ -133,22 +133,24 @@ class Attention(nn.Module):
 
 class FewShotAttention(Attention):
 
-    def __init__(self, d_model, n_heads=1, activation='softmax', top_k=0):
+    def __init__(self, d_model, n_heads=1, activation='softmax', dropout=0.2):
         super(FewShotAttention, self).__init__(n_heads=n_heads, activation=activation)
         self.d_k = d_model // self.n_heads
-        self.query_linears = nn.ModuleList([nn.Linear(self.d_k, self.d_k) for _ in range(self.n_heads)]) #
-        self.key_linears = nn.ModuleList([nn.Linear(self.d_k, self.d_k) for _ in range(self.n_heads)]) # to reduce the number of params
+        self.query_linears = nn.ModuleList([nn.Linear(self.d_k, int(self.d_k/2), bias=False) for _ in range(self.n_heads)]) #
+        self.key_linears = nn.ModuleList([nn.Linear(self.d_k, int(self.d_k/2), bias=False) for _ in range(self.n_heads)]) # to reduce the number of params
+        self.dropout = nn.Dropout(dropout)
 
 
     def forward(self, query, key, value, mask=None, dropout=None):
         batch_size = query.size(0)
         query = query.view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
         key = key.view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
+        value = value.view(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
 
-        query = [linear(query[:, i, :, :]) for i, linear in enumerate(self.query_linears)]
-        key = [linear(key[:, i, :, :]) for i, linear in enumerate(self.key_linears)]
+        query = [self.dropout(linear(query[:, i, :, :])) for i, linear in enumerate(self.query_linears)]
+        key = [self.dropout(linear(key[:, i, :, :])) for i, linear in enumerate(self.key_linears)]
 
-        if self.n_heads==1:
+        if self.n_heads!=1:
             query = torch.stack(query, dim=1)
             key = torch.stack(key, dim=1)
         else:
@@ -158,7 +160,7 @@ class FewShotAttention(Attention):
         scores = torch.matmul(query, key.transpose(-2, -1)) \
                  / torch.sqrt(torch.tensor(query.size(-1)))
         p_attn = self.activation(scores)
+        p_attn = self.dropout(p_attn)
         x = torch.matmul(p_attn, value)
         x = x.transpose(1, 2).contiguous().view(batch_size, -1, self.n_heads * self.d_k)
-
         return x, p_attn, scores

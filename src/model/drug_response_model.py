@@ -39,7 +39,7 @@ class DrugResponseModel(Genotype2PhenotypeTransformer):
 
         system_embedding, gene_embedding = self.get_perturbed_embedding(genotype_dict,
                                                                         nested_hierarchical_masks_forward,
-                                                                        nested_hierarchical_masks_backward, sys2gene,
+                                                                        nested_hierarchical_masks_backward, sys2gene_mask,
                                                                         sys2cell, cell2sys, sys2gene)
 
         compound_embedding = self.get_compound_embedding(compound, unsqueeze=True)
