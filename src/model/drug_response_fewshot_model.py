@@ -15,7 +15,7 @@ class DrugResponseFewShotTransformer(nn.Module):
         self.predictor = nn.Linear(hidden_dims * 2, 1)
 
 
-    def forward(self, query_sys_embedding, query_gene_embedding, key_sys_embedding, key_gene_embedding):
+    def forward(self, query_sys_embedding, query_gene_embedding, key_sys_embedding, key_gene_embedding, transform=True):
         batch_size, n_sys, hidden_dim = query_sys_embedding.size()
         batch_size, n_gene, hidden_dim = query_gene_embedding.size()
 
@@ -27,12 +27,12 @@ class DrugResponseFewShotTransformer(nn.Module):
 
         sys_transformed = []
         for i in range(n_sys):
-            embedding_result, attention, score = self.few_shot_attention(query_sys_embedding[:, :, i, :], key_sys_embedding[:, :, i, :], key_sys_embedding[:, :, i, :])
+            embedding_result, attention, score = self.few_shot_attention(query_sys_embedding[:, :, i, :], key_sys_embedding[:, :, i, :], key_sys_embedding[:, :, i, :], transform=transform)
             sys_transformed.append(embedding_result)
 
         gene_transformed = []
         for j in range(n_gene):
-            embedding_result, attention, score = self.few_shot_attention(query_gene_embedding[:, :, j, :], key_gene_embedding[:, :, j, :], key_gene_embedding[:, :, j, :])
+            embedding_result, attention, score = self.few_shot_attention(query_gene_embedding[:, :, j, :], key_gene_embedding[:, :, j, :], key_gene_embedding[:, :, j, :], transform=transform)
             gene_transformed.append(embedding_result)
 
         sys_transformed = torch.stack(sys_transformed, dim=2)[:, 0, :, :]

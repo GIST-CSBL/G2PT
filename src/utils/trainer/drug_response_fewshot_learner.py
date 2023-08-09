@@ -22,6 +22,7 @@ class DrugResponseFewShotLearner(object):
                  few_shot_train_drug_response_dataloader, few_shot_test_drug_response_dataloader, device, args):
         self.device = device
         self.train_drug_response_model = train_drug_response_model.to(self.device)
+        self.train_drug_response_model.eval()
         for param in self.train_drug_response_model.parameters():
             param.requires_grad = False
 
@@ -39,6 +40,8 @@ class DrugResponseFewShotLearner(object):
         self.ccc_loss = CCCLoss(mean_diff=True)
         self.optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.few_shot_model.parameters()),
                                      lr=args.lr, weight_decay=0)
+        #lmbda = lambda epoch: 0.95
+        self.lr_scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, 10)
         self.nested_subtrees_forward = self.train_drug_response_dataloader.dataset.tree_parser.get_nested_subtree_mask(
             args.subtree_order, direction='forward')
         self.nested_subtrees_forward = move_to(self.nested_subtrees_forward, device)
@@ -56,8 +59,11 @@ class DrugResponseFewShotLearner(object):
         self.train_predictor = False
         print("Corr for orig dataset")
         self.evaluate_original_model(self.train_drug_response_model, self.train_drug_response_dataloader, False)
-        print("Corr for few-shot test dataset")
+        print("Corr for few-shot test dataset without training")
         self.evaluate_original_model(self.train_drug_response_model, self.few_shot_test_drug_response_dataloader, self.invert_prediction)
+        print("Corr for zero-shot test dataset without training")
+        self.evaluate_zero_shot_model(self.train_drug_response_model, self.few_shot_test_drug_response_dataloader,
+                                     self.invert_prediction)
 
     def evaluate_original_model(self, model, dataloader, invert_prediction):
         trues = []
@@ -78,7 +84,48 @@ class DrugResponseFewShotLearner(object):
                                                 sys2gene=self.args.sys2gene)
                 prediction = prediction.detach().cpu().numpy()
                 if invert_prediction:
-                    prediction = 1 / prediction
+                    prediction = 1 - prediction
+                results.append(prediction)
+        trues = np.concatenate(trues)
+        results = np.concatenate(results)[:, 0]
+        pearson = pearsonr(trues, results)
+        r_square = metrics.r2_score(trues, results)
+        spearman = spearmanr(trues, results)
+        print("R_square: ", r_square)
+        print("Pearson r: ", pearson)
+        print("Spearman Rho: ", spearman)
+
+    def evaluate_zero_shot_model(self, model, dataloader, invert_prediction):
+        trues = []
+        results = []
+        dataloader_with_tqdm = tqdm(dataloader)
+
+        test_df = dataloader.dataset.drug_response_df.reset_index()
+        model.to(self.device)
+        model.eval()
+        with torch.no_grad():
+            for i, batch in enumerate(dataloader_with_tqdm):
+                batch = move_to(batch, self.device)
+                query_sys_embedding, query_gene_embedding, = self.train_drug_response_model.get_perturbed_embedding(
+                    batch['genotype'],
+                    self.nested_subtrees_forward, self.nested_subtrees_backward, self.system2gene_mask,
+                    sys2cell=self.args.sys2cell,
+                    cell2sys=self.args.cell2sys,
+                    sys2gene=self.args.sys2gene)
+                updated_sys_embedding, updated_gene_embedding = self.few_shot_model(query_sys_embedding,
+                                                                                    query_gene_embedding,
+                                                                                    self.train_system_embedding,
+                                                                                    self.train_gene_embedding, transform=False)
+
+                compound_embedding = self.train_drug_response_model.get_compound_embedding(batch['drug'],
+                                                                                           unsqueeze=True)
+                predictor = self.train_drug_response_model.drug_response_predictor
+                prediction = self.train_drug_response_model.prediction(predictor, compound_embedding, updated_sys_embedding,
+                                                            updated_gene_embedding)
+                if invert_prediction:
+                    prediction = 1 - prediction
+                trues.append((batch['response_mean'] + batch['response_residual']).detach().cpu().numpy())
+                prediction = prediction.detach().cpu().numpy()
                 results.append(prediction)
         trues = np.concatenate(trues)
         results = np.concatenate(results)[:, 0]
@@ -129,8 +176,9 @@ class DrugResponseFewShotLearner(object):
                 gc.collect()
                 if output_path:
                     output_path_epoch = output_path + ".%d"%epoch
+                    print("Save to...", output_path_epoch)
                     torch.save(self.few_shot_model, output_path_epoch)
-            #self.lr_scheduler.step()
+            self.lr_scheduler.step()
 
     def train_epoch(self, epoch):
         self.few_shot_model.train()
@@ -167,7 +215,7 @@ class DrugResponseFewShotLearner(object):
                 prediction = self.train_drug_response_model.prediction(predictor, compound_embedding, updated_sys_embedding,
                                                             updated_gene_embedding)
                 if invert_prediction:
-                    prediction = 1 / prediction
+                    prediction = 1 - prediction
                 trues.append((batch['response_mean'] + batch['response_residual']).detach().cpu().numpy())
                 prediction = prediction.detach().cpu().numpy()
                 results.append(prediction)
@@ -206,7 +254,7 @@ class DrugResponseFewShotLearner(object):
 
             prediction = self.train_drug_response_model.prediction(predictor, compound_embedding, updated_sys_embedding, updated_gene_embedding)
             if invert_prediction:
-                prediction = 1 / prediction
+                prediction = 1 - prediction
             #print((batch['response_mean'] + batch['response_residual']).to(torch.float32), prediction[:, 0])
             prediction = prediction[:, 0]
             l1_loss = self.loss((batch['response_mean'] + batch['response_residual']).to(torch.float32), prediction)
