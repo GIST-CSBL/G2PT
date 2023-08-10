@@ -55,8 +55,9 @@ class DrugResponseFewShotLearner(object):
         self.train_gene_embedding = train_gene_embedding
         self.l1_lambda = args.l1_lambda
         self.l2_lambda = args.l2_lambda
-        self.invert_prediction = True
-        self.train_predictor = False
+        self.invert_prediction = False
+        self.train_predictor = True
+        self.few_shot_model.predictor.weight = self.train_drug_response_model.drug_response_predictor.weight
         print("Corr for orig dataset")
         self.evaluate_original_model(self.train_drug_response_model, self.train_drug_response_dataloader, False)
         print("Corr for few-shot test dataset without training")
@@ -99,8 +100,6 @@ class DrugResponseFewShotLearner(object):
         trues = []
         results = []
         dataloader_with_tqdm = tqdm(dataloader)
-
-        test_df = dataloader.dataset.drug_response_df.reset_index()
         model.to(self.device)
         model.eval()
         with torch.no_grad():
@@ -136,6 +135,38 @@ class DrugResponseFewShotLearner(object):
         print("Pearson r: ", pearson)
         print("Spearman Rho: ", spearman)
 
+
+    def predict(self, model, dataloader, invert_prediction=False, train_predictor=False):
+        dataloader_with_tqdm = tqdm(dataloader)
+        results = []
+        with torch.no_grad():
+            for i, batch in enumerate(dataloader_with_tqdm):
+                batch = move_to(batch, self.device)
+                query_sys_embedding, query_gene_embedding, = self.train_drug_response_model.get_perturbed_embedding(
+                    batch['genotype'],
+                    self.nested_subtrees_forward, self.nested_subtrees_backward, self.system2gene_mask,
+                    sys2cell=self.args.sys2cell,
+                    cell2sys=self.args.cell2sys,
+                    sys2gene=self.args.sys2gene)
+                updated_sys_embedding, updated_gene_embedding = self.few_shot_model(query_sys_embedding,
+                                                                                    query_gene_embedding,
+                                                                                    self.train_system_embedding,
+                                                                                    self.train_gene_embedding, transform=False)
+
+                compound_embedding = self.train_drug_response_model.get_compound_embedding(batch['drug'],
+                                                                                           unsqueeze=True)
+                if train_predictor:
+                    predictor = self.few_shot_model.predictor
+                else:
+                    predictor = self.train_drug_response_model.drug_response_predictor
+                prediction = self.train_drug_response_model.prediction(predictor, compound_embedding, updated_sys_embedding,
+                                                            updated_gene_embedding)
+                if invert_prediction:
+                    prediction = 1 - prediction
+                prediction = prediction.detach().cpu().numpy()
+                results.append(prediction)
+        results = np.concatenate(results)[:, 0]
+        return results
 
     def get_train_embedding(self, model, dataloader):
         dataloader_with_tqdm = tqdm(dataloader)
