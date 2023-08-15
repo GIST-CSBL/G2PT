@@ -71,6 +71,7 @@ def main():
     parser.add_argument('--genotypes', help='Mutation information for cell lines', type=str)
 
     parser.add_argument('--few_shot_train', help='Cell to ID mapping file', type=str)
+    parser.add_argument('--few_shot_val', help='Cell to ID mapping file', type=str)
     parser.add_argument('--few_shot_test', help='Cell to ID mapping file', type=str)
     parser.add_argument('--few_shot_cell2id', help='Cell to ID mapping file', type=str)
     parser.add_argument('--few_shot_genotypes', help='Mutation information for cell lines', type=str)
@@ -86,6 +87,7 @@ def main():
 
     parser.add_argument('--jobs', help="The number of threads", type=int, default=0)
     parser.add_argument('--out', help="output model path")
+    parser.add_argument('--prediction_output', help="output model path")
 
 
     parser.add_argument('--sys2cell', action='store_true', default=False)
@@ -125,13 +127,13 @@ def main():
     #few_shot_df = pd.read_csv()#.sample(frac=1)
 
     few_shot_train = pd.read_csv(args.few_shot_train, header=None, sep='\t')#few_shot_dataset.iloc[:args.n_shot]
-    few_shot_test = pd.read_csv(args.few_shot_test, header=None, sep='\t')#few_shot_dataset.iloc[args.n_shot:]
+    few_shot_val = pd.read_csv(args.few_shot_test, header=None, sep='\t')#few_shot_dataset.iloc[args.n_shot:]
     args.few_shot_genotypes = {genotype.split(":")[0]: genotype.split(":")[1] for genotype in args.few_shot_genotypes.split(',')}
     few_shot_train_drug_response_dataset = DrugResponseDataset(few_shot_train, args.few_shot_cell2id, args.few_shot_genotypes, compound_encoder, tree_parser)
     few_shot_train_response_dataloader = DataLoader(few_shot_train_drug_response_dataset, shuffle=False, batch_size=args.batch_size,
                                            num_workers=args.jobs, collate_fn=drug_response_collator)
 
-    few_shot_test_drug_response_dataset = DrugResponseDataset(few_shot_test, args.few_shot_cell2id,
+    few_shot_test_drug_response_dataset = DrugResponseDataset(few_shot_val, args.few_shot_cell2id,
                                                                args.few_shot_genotypes, compound_encoder, tree_parser)
     few_shot_test_response_dataloader = DataLoader(few_shot_test_drug_response_dataset, shuffle=False,
                                                     batch_size=args.batch_size,
@@ -139,6 +141,22 @@ def main():
 
     few_shot_learner = DrugResponseFewShotLearner(drug_response_model, few_shot_model, train_response_dataloader, few_shot_train_response_dataloader, few_shot_test_response_dataloader, device, args=args)
     few_shot_learner.train_few_shot(args.epochs, args.out)
+
+    if args.few_shot_test is not None:
+        few_shot_test = pd.read_csv(args.few_shot_test, header=None, sep='\t')
+        few_shot_test_drug_response_dataset = DrugResponseDataset(few_shot_test, args.few_shot_cell2id,
+                                                                   args.few_shot_genotypes, compound_encoder,
+                                                                   tree_parser)
+        few_shot_test_response_dataloader = DataLoader(few_shot_test_drug_response_dataset, shuffle=False,
+                                                        batch_size=args.batch_size,
+                                                        num_workers=args.jobs, collate_fn=drug_response_collator)
+        print("Invert: ", few_shot_learner.invert_prediction)
+        best_model = few_shot_learner.get_best_model()
+        prediction = few_shot_learner.predict(best_model, few_shot_test_response_dataloader, invert_prediction=few_shot_learner.invert_prediction, train_predictor=few_shot_learner.train_predictor)
+        few_shot_test['prediction'] = prediction
+        few_shot_test.to_csv(args.prediction_output, header=None, index=False)
+        torch.save(best_model, args.out)
+
 
 if __name__ == '__main__':
     main()

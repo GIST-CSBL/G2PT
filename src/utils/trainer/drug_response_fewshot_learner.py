@@ -37,7 +37,7 @@ class DrugResponseFewShotLearner(object):
         self.few_shot_train_drug_response_dataloader = few_shot_train_drug_response_dataloader
         self.few_shot_test_drug_response_dataloader = few_shot_test_drug_response_dataloader
         self.loss = nn.L1Loss()#CCCLoss()#SpearmanLoss(regularization_strength=args.l2_lambda, device=self.device)
-        self.ccc_loss = CCCLoss(mean_diff=True)
+        self.ccc_loss = CCCLoss(mean_diff=False)
         self.optimizer = optim.Adam(filter(lambda p: p.requires_grad, self.few_shot_model.parameters()),
                                      lr=args.lr, weight_decay=0)
         #lmbda = lambda epoch: 0.95
@@ -55,7 +55,7 @@ class DrugResponseFewShotLearner(object):
         self.train_gene_embedding = train_gene_embedding
         self.l1_lambda = args.l1_lambda
         self.l2_lambda = args.l2_lambda
-        self.invert_prediction = False
+        self.invert_prediction = True
         self.train_predictor = True
         self.few_shot_model.predictor.weight = self.train_drug_response_model.drug_response_predictor.weight
         print("Corr for orig dataset")
@@ -63,8 +63,7 @@ class DrugResponseFewShotLearner(object):
         print("Corr for few-shot test dataset without training")
         self.evaluate_original_model(self.train_drug_response_model, self.few_shot_test_drug_response_dataloader, self.invert_prediction)
         print("Corr for zero-shot test dataset without training")
-        self.evaluate_zero_shot_model(self.train_drug_response_model, self.few_shot_test_drug_response_dataloader,
-                                     self.invert_prediction)
+        self.zero_shot_performance = np.abs(self.evaluate(self.few_shot_test_drug_response_dataloader, 0, name="Zero-shot", train_predictor=self.train_predictor, invert_prediction=self.invert_prediction, transform=False))
 
     def evaluate_original_model(self, model, dataloader, invert_prediction):
         trues = []
@@ -96,46 +95,6 @@ class DrugResponseFewShotLearner(object):
         print("Pearson r: ", pearson)
         print("Spearman Rho: ", spearman)
 
-    def evaluate_zero_shot_model(self, model, dataloader, invert_prediction):
-        trues = []
-        results = []
-        dataloader_with_tqdm = tqdm(dataloader)
-        model.to(self.device)
-        model.eval()
-        with torch.no_grad():
-            for i, batch in enumerate(dataloader_with_tqdm):
-                batch = move_to(batch, self.device)
-                query_sys_embedding, query_gene_embedding, = self.train_drug_response_model.get_perturbed_embedding(
-                    batch['genotype'],
-                    self.nested_subtrees_forward, self.nested_subtrees_backward, self.system2gene_mask,
-                    sys2cell=self.args.sys2cell,
-                    cell2sys=self.args.cell2sys,
-                    sys2gene=self.args.sys2gene)
-                updated_sys_embedding, updated_gene_embedding = self.few_shot_model(query_sys_embedding,
-                                                                                    query_gene_embedding,
-                                                                                    self.train_system_embedding,
-                                                                                    self.train_gene_embedding, transform=False)
-
-                compound_embedding = self.train_drug_response_model.get_compound_embedding(batch['drug'],
-                                                                                           unsqueeze=True)
-                predictor = self.train_drug_response_model.drug_response_predictor
-                prediction = self.train_drug_response_model.prediction(predictor, compound_embedding, updated_sys_embedding,
-                                                            updated_gene_embedding)
-                if invert_prediction:
-                    prediction = 1 - prediction
-                trues.append((batch['response_mean'] + batch['response_residual']).detach().cpu().numpy())
-                prediction = prediction.detach().cpu().numpy()
-                results.append(prediction)
-        trues = np.concatenate(trues)
-        results = np.concatenate(results)[:, 0]
-        pearson = pearsonr(trues, results)
-        r_square = metrics.r2_score(trues, results)
-        spearman = spearmanr(trues, results)
-        print("R_square: ", r_square)
-        print("Pearson r: ", pearson)
-        print("Spearman Rho: ", spearman)
-
-
     def predict(self, model, dataloader, invert_prediction=False, train_predictor=False):
         dataloader_with_tqdm = tqdm(dataloader)
         results = []
@@ -148,7 +107,7 @@ class DrugResponseFewShotLearner(object):
                     sys2cell=self.args.sys2cell,
                     cell2sys=self.args.cell2sys,
                     sys2gene=self.args.sys2gene)
-                updated_sys_embedding, updated_gene_embedding = self.few_shot_model(query_sys_embedding,
+                updated_sys_embedding, updated_gene_embedding = model(query_sys_embedding,
                                                                                     query_gene_embedding,
                                                                                     self.train_system_embedding,
                                                                                     self.train_gene_embedding, transform=False)
@@ -156,7 +115,7 @@ class DrugResponseFewShotLearner(object):
                 compound_embedding = self.train_drug_response_model.get_compound_embedding(batch['drug'],
                                                                                            unsqueeze=True)
                 if train_predictor:
-                    predictor = self.few_shot_model.predictor
+                    predictor = model.predictor
                 else:
                     predictor = self.train_drug_response_model.drug_response_predictor
                 prediction = self.train_drug_response_model.prediction(predictor, compound_embedding, updated_sys_embedding,
@@ -195,14 +154,22 @@ class DrugResponseFewShotLearner(object):
     def train_few_shot(self, epochs, output_path):
         self.best_model = self.few_shot_model
         best_performance = 0
-        for epoch in range(epochs):
+        epoch = 0
+        while True:
             self.train_epoch(epoch + 1)
             gc.collect()
             torch.cuda.empty_cache()
-            if (epoch % self.args.val_step)==0 & (epoch != 0):
+            if (epoch % self.args.val_step)==0:
                 performance = self.evaluate(self.few_shot_test_drug_response_dataloader, epoch+1, name="Validation", train_predictor=self.train_predictor, invert_prediction=self.invert_prediction)
+                if performance < self.zero_shot_performance:
+                    for layer in self.few_shot_model.children():
+                        if hasattr(layer, 'reset_parameters'):
+                            layer.reset_parameters()
+                    continue
+                    print("\n Reset Params.. \n")
+                    epoch = 0
                 if performance > best_performance:
-                    self.best_model = copy.deepcopy(self.few_shot_model).to('cpu')
+                    self.best_model = copy.deepcopy(self.few_shot_model).to(self.device)
                 torch.cuda.empty_cache()
                 gc.collect()
                 if output_path:
@@ -210,13 +177,19 @@ class DrugResponseFewShotLearner(object):
                     print("Save to...", output_path_epoch)
                     torch.save(self.few_shot_model, output_path_epoch)
             self.lr_scheduler.step()
+            epoch += 1
+            if epoch==epochs:
+                break
+
+    def get_best_model(self):
+        return self.best_model
 
     def train_epoch(self, epoch):
         self.few_shot_model.train()
         self.iter_minibatches(self.few_shot_train_drug_response_dataloader, epoch, name="Batch", train_predictor=self.train_predictor, invert_prediction=self.invert_prediction)
 
 
-    def evaluate(self, dataloader, epoch, name="Validation", train_predictor=False, invert_prediction=True):
+    def evaluate(self, dataloader, epoch, name="Validation", train_predictor=False, invert_prediction=True, transform=True):
         trues = []
         results = []
         dataloader_with_tqdm = tqdm(dataloader)
@@ -233,7 +206,7 @@ class DrugResponseFewShotLearner(object):
                 updated_sys_embedding, updated_gene_embedding = self.few_shot_model(query_sys_embedding,
                                                                                     query_gene_embedding,
                                                                                     self.train_system_embedding,
-                                                                                    self.train_gene_embedding)
+                                                                                    self.train_gene_embedding, transform=transform)
 
                 compound_embedding = self.train_drug_response_model.get_compound_embedding(batch['drug'],
                                                                                            unsqueeze=True)
