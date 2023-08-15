@@ -102,9 +102,10 @@ def main():
 
     tree_parser = MutTreeParser(args.onto, args.gene2id)
     train_dataset = pd.read_csv(args.train, header=None, sep='\t')
+    n_train_celllines = train_dataset.shape[0]
     device = torch.device("cuda:%d" % args.gpu)
     drug_response_model = torch.load(args.model, map_location=device)
-    few_shot_model = DrugResponseFewShotTransformer(args.hidden_dims, n_heads=4, dropout=args.dropout)
+    few_shot_model = DrugResponseFewShotTransformer(args.hidden_dims, n_train_celllines=n_train_celllines, dropout=args.dropout)
 
     print("Summary of trainable parameters")
     count_parameters(few_shot_model)

@@ -6,11 +6,11 @@ from src.model.hierarchical_transformer import FewShotAttention
 
 class DrugResponseFewShotTransformer(nn.Module):
 
-    def __init__(self, hidden_dims, n_heads=1, dropout=0.5):
+    def __init__(self, hidden_dims, n_train_celllines, dropout=0.5):
         super(DrugResponseFewShotTransformer, self).__init__()
         self.hidden_dims = hidden_dims
-        self.n_heads = n_heads
-        self.few_shot_attention = FewShotAttention(self.hidden_dims, self.n_heads, dropout=dropout)
+
+        self.few_shot_attention = FewShotAttention(self.hidden_dims, n_heads=1, n_train_celllines=n_train_celllines, dropout=dropout)
         #self.few_shot_attention_gene = FewShotAttention(self.hidden_dims, self.n_heads, dropout=dropout)
         self.predictor = nn.Linear(hidden_dims * 2, 1)
 
