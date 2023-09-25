@@ -1,6 +1,6 @@
 import torch.nn as nn
 import torch
-from src.model.hierarchical_transformer import FewShotAttention
+from src.model.hierarchical_transformer.attention import FewShotAttention
 
 
 
