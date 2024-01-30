@@ -106,4 +106,8 @@ class HierarchicalTransformer(nn.Module):
         result = result.masked_fill(node_mask, 0)
         return result
 
+    def get_attention(self, q, k, v, mask, norm=True):
+        return self.hierarchical_transformer_update.attention.get_attention(q, k, v, mask=mask)
 
+    def get_score(self, q, k, v, mask, norm=True):
+        return self.hierarchical_transformer_update.attention.get_score(q, k, v, mask=mask)

@@ -84,7 +84,7 @@ class Genotype2PhenotypeTransformer(nn.Module):
             for hierarchical_mask in hierarchical_masks:
                 if with_indices:
                     system_embedding_queries = self.sys_norm(self.system_embedding(hierarchical_mask['query']).unsqueeze(0).expand(batch_size, -1, -1))
-                    system_embedding_keys = self.sys_norm(self.system_embedding(hierarchical_mask['key']).unsqueeze(0).expand(batch_size, -1, feature_size))
+                    system_embedding_keys = self.sys_norm(self.system_embedding(hierarchical_mask['key']).unsqueeze(0).expand(batch_size, -1, -1))
                     system_effect_queries = torch.gather(update_tensor, 1, hierarchical_mask['query'].unsqueeze(0).unsqueeze(2).expand(batch_size, -1, feature_size).to(torch.int64))
                     system_embedding_queries = system_embedding_queries + system_effect_queries
                     system_embedding_queries = self.sys_norm(system_embedding_queries)
@@ -95,7 +95,7 @@ class Genotype2PhenotypeTransformer(nn.Module):
                 else:
                     mask = hierarchical_mask
                 if direction=='forward':
-                    #print(system_embedding_queries.size(), system_embedding_keys.size())
+                    #print(system_embedding_queries.size(), system_embedding_keys.size(), mask.size())
                     hitr_result = self.sys2env.forward(system_embedding_queries, system_embedding_keys, mask)
                 else:
                     hitr_result = self.env2sys.forward(system_embedding_queries, system_embedding_keys, mask)

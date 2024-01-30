@@ -45,13 +45,16 @@ class DrugResponseTrainer(object):
         #self.scheduler = get_linear_schedule_with_warmup(self.optimizer, int(0.2 * self.total_train_step),
         #                                                  self.total_train_step)
         self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, 10)
+        '''
         self.nested_subtrees_forward = self.drug_response_dataloader_drug.dataset.tree_parser.get_nested_subtree_mask(
             args.subtree_order, direction='forward')
         self.nested_subtrees_forward = move_to(self.nested_subtrees_forward, device)
         self.nested_subtrees_backward = self.drug_response_dataloader_drug.dataset.tree_parser.get_nested_subtree_mask(
             args.subtree_order, direction='backward')
         self.nested_subtrees_backward = move_to(self.nested_subtrees_backward, device)
+        
         self.system2gene_mask = move_to(torch.tensor(self.drug_response_dataloader_drug.dataset.tree_parser.sys2gene_mask, dtype=torch.bool), device)
+        '''
         print("%d sys2gene in Dataloader" % self.drug_response_dataloader_drug.dataset.tree_parser.sys2gene_mask.sum())
         self.args = args
         #self.compound_encoder = copy.deepcopy(self.drug_response_model.compound_encoder)
@@ -118,7 +121,9 @@ class DrugResponseTrainer(object):
                 trues.append(batch['response_mean'] + batch['response_residual'])
                 batch = move_to(batch, self.device)
                 drug_response_predicted = model(batch['genotype'], batch['drug'],
-                                                self.nested_subtrees_forward, self.nested_subtrees_backward, self.system2gene_mask,
+                                                batch['nested_subtrees_forward'], batch['nested_subtrees_backward'],
+                                                batch['sys2gene_mask'],
+                                                sys_inds=batch['sys_inds'], gene_inds=batch['gene_inds'],
                                                 sys2cell=self.args.sys2cell,
                                                 cell2sys=self.args.cell2sys,
                                                 sys2gene=self.args.sys2gene)
@@ -178,8 +183,13 @@ class DrugResponseTrainer(object):
         dataloader_with_tqdm = tqdm(dataloader)
         for i, batch in enumerate(dataloader_with_tqdm):
             batch = move_to(batch, self.device)
-            drug_response_predicted = self.drug_response_model(batch['genotype'], batch['drug'],
-                                                           self.nested_subtrees_forward, self.nested_subtrees_backward, self.system2gene_mask,
+            drug_response_predicted = self.drug_response_model(batch['genotype'],
+                                                               batch['drug'],
+                                                               batch['nested_subtrees_forward'],
+                                                               batch['nested_subtrees_backward'],
+                                                               batch['sys2gene_mask'],
+                                                               sys_inds=batch['sys_inds'],
+                                                               gene_inds=batch['gene_inds'],
                                                                sys2cell=self.args.sys2cell,
                                                                cell2sys=self.args.cell2sys,
                                                                sys2gene=self.args.sys2gene)
@@ -211,6 +221,7 @@ class DrugResponseTrainer(object):
                 mean_feature_loss += float(feature_loss/3)
             self.optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.drug_response_model.parameters(), 1)
             self.optimizer.step()
             #self.scheduler.step()
             #self.drug_response_model.compound_encoder = self.compound_encoder

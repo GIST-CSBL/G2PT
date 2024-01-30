@@ -50,8 +50,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
         self.gene2sys = HierarchicalTransformer(hidden_dims, 4, hidden_dims * 4,
                                                 self.gene2sys_update_norm_inner,
                                                 self.gene2sys_update_norm_outer,
-                                                dropout, norm_channel_first=self.norm_channel_first,
-                                                conv_type='genotype', activation='softmax')
+                                                dropout, norm_channel_first=self.norm_channel_first, activation='softmax')
         self.n_covariates = n_covariates
         #self.phenotype_vector = nn.Embedding(1, hidden_dims)
         self.covariate_linear_1 = nn.Linear(self.n_covariates, hidden_dims)
@@ -72,11 +71,11 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
 
         self.system2phenotype = Genotype2Phenotype(hidden_dims, 1, hidden_dims * 4,
                                                    inner_norm=self.sys2pheno_update_norm_inner,
-                                                   outer_norm=self.sys2pheno_update_norm_outer, dropout=dropout,
+                                                   outer_norm=self.sys2pheno_update_norm_outer, dropout=0.0,
                                                    transform=True, activation='softmax')
         self.gene2phenotype = Genotype2Phenotype(hidden_dims, 1, hidden_dims * 4,
                                                  inner_norm=self.gene2pheno_update_norm_inner,
-                                                 outer_norm=self.gene2pheno_update_norm_outer, dropout=dropout,
+                                                 outer_norm=self.gene2pheno_update_norm_outer, dropout=0.0,
                                                  transform=True, activation='softmax')
 
         self.last_activation = nn.Tanh()
@@ -92,48 +91,35 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             print("Model will do regression")
 
     def forward(self, genotype_dict, covariates, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward,
-                gene2sys_mask, sys2gene_mask, gene_weight=None, sys2cell=True, cell2sys=True, sys2gene=True):
+                gene2sys_mask, sys2gene_mask, gene_weight=None, sys2cell=True, cell2sys=True, sys2gene=True,
+                snp_inds=[], gene_inds=[], sys_inds=[], with_indices=True):
         if self.by_chr:
             batch_size, _ = genotype_dict['embedding']['homozygous'][1]['snp'].size()
         else:
             #batch_size, _ = genotype_dict['embedding']['homozygous']['snp'].size()
             #print(genotype_dict)
-            batch_size, _ = genotype_dict['embedding']['homozygous_a1']['snp'].size()
-        gene_embedding = self.get_snp2gene(batch_size, genotype=genotype_dict)[:, :-1, :]
-        system_embedding = self.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, :-1, :]
-        system_embedding = self.get_gene2sys(system_embedding, gene_embedding, genotype_dict)
+            batch_size, _ = covariates.size()
+        gene_embedding = self.get_snp2gene(genotype=genotype_dict, batch_size=batch_size, snp_inds=snp_inds, gene_inds=gene_inds,
+                                           with_indices=with_indices)
+        system_embedding = self.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, sys_inds, :]
+        system_embedding = self.get_gene2sys(system_embedding, gene_embedding, gene2sys_mask)
         if sys2cell:
-            system_embedding, update_tensor = self.get_sys2sys(system_embedding, nested_hierarchical_masks_forward, direction='forward', return_updates=True, with_indices=True, update_tensor=None)
+            #system_embedding, update_tensor = self.get_sys2sys(system_embedding, nested_hierarchical_masks_forward, direction='forward', return_updates=True, with_indices=False, update_tensor=None)
+            system_embedding = self.get_sys2sys(system_embedding, nested_hierarchical_masks_forward,
+                                                               direction='forward', return_updates=False,
+                                                               with_indices=False, update_tensor=None)
         if cell2sys:
-            system_embedding = self.get_sys2sys(system_embedding, nested_hierarchical_masks_backward, direction='backward', return_updates=False, with_indices=True, update_tensor=update_tensor)
+            #system_embedding = self.get_sys2sys(system_embedding, nested_hierarchical_masks_backward, direction='backward', return_updates=False, with_indices=False, update_tensor=update_tensor)
+            system_embedding = self.get_sys2sys(system_embedding, nested_hierarchical_masks_backward,
+                                                direction='backward', return_updates=False, with_indices=False)
         if sys2gene:
             gene_embedding = self.get_sys2gene(system_embedding, gene_embedding, sys2gene_mask)
         phenotype_vector = self.get_phenotype_vector(covariates)
         prediction = self.prediction(phenotype_vector, system_embedding, gene_embedding)
         return prediction
 
-    def get_snp2gene(self, batch_size, genotype):
-        if self.by_chr:
-            heterozygous_result = [self.get_snp_effects(genotype['embedding']['heterozygous'][CHR], self.snp2gene_heterozygous) for CHR in self.chromosomes]
-            heterozygous_gene_indices = torch.cat(
-                [gene_indices for gene_indices, chr_snp_effect in heterozygous_result if gene_indices is not None],
-                dim=1)
-            heterozygous_snp_effect_from_embedding = torch.cat(
-                [chr_snp_effect for gene_indices, chr_snp_effect in heterozygous_result if chr_snp_effect is not None],
-                dim=1)
-            homozygous_result = [self.get_snp_effects(genotype['embedding']['homozygous'][CHR], self.snp2gene_homozygous) for
-                                 CHR in self.chromosomes]
-            homozygous_gene_indices = torch.cat(
-                [gene_indices for gene_indices, chr_snp_effect in homozygous_result if gene_indices is not None],
-                dim=1)
-            homozygous_snp_effect_from_embedding = torch.cat(
-                [chr_snp_effect for gene_indices, chr_snp_effect in homozygous_result if chr_snp_effect is not None],
-                dim=1)
-            gene_indices = torch.cat([heterozygous_gene_indices, homozygous_gene_indices], dim=-1)
-            snp_effect_from_embedding = torch.cat([heterozygous_snp_effect_from_embedding, homozygous_snp_effect_from_embedding], dim=1)
-
-        else:
-
+    def get_snp2gene(self, genotype, batch_size=1, snp_inds=[], gene_inds=[], with_indices=True):
+        if with_indices:
             heterozygous_gene_indices, heterozygous_snp_effect_from_embedding = self.get_snp_effects(
                 genotype['embedding']['heterozygous'], self.snp2gene_heterozygous)
             homozygous_gene_indices, homozygous_snp_effect_from_embedding = self.get_snp_effects(
@@ -141,18 +127,28 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             gene_indices = torch.cat([heterozygous_gene_indices, homozygous_gene_indices], dim=-1)
             snp_effect_from_embedding = torch.cat(
                 [heterozygous_snp_effect_from_embedding, homozygous_snp_effect_from_embedding], dim=1)
-            #gene_indices, snp_effect_from_embedding = self.get_snp_effects(genotype['embedding'], self.snp2gene)
-        batch_size = gene_indices.size(0)
-        snp_effect = torch.zeros_like(self.gene_embedding.weight).unsqueeze(0).expand(batch_size, -1, -1)
-        results = []
-        for b, value in enumerate(snp_effect):
-            results.append(
-                snp_effect[b].index_add(0, gene_indices[b], snp_effect_from_embedding[b]))
-        snp_effect = torch.stack(results, dim=0)
-        gene_embedding = self.gene_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)
-        return gene_embedding + snp_effect
+            snp_effect = torch.zeros_like(self.gene_embedding.weight).unsqueeze(0).expand(batch_size, -1, -1)
+            results = []
+            for b, value in enumerate(snp_effect):
+                results.append(
+                    snp_effect[b].index_add(0, gene_indices[b], snp_effect_from_embedding[b]))
+            snp_effect = torch.stack(results, dim=0)
+            gene_embedding = self.gene_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)
+            gene_embedding = gene_embedding + snp_effect
+            return gene_embedding[:, :-1, :]
+        else:
+            gene_embedding = self.gene_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, gene_inds, :]
+            snp_embedding = self.snp_norm(self.snp_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, snp_inds, :])
+            snp_mask = self.dropout(torch.ones_like(genotype['homozygous_a1'].sum(0).sum(0)))
+            snp_mask = snp_mask.unsqueeze(0).unsqueeze(1).expand(batch_size, gene_embedding.size(1), -1)
+            gene_embedding_norm = self.gene_norm(gene_embedding)
+            homozygous_effect = self.snp2gene_homozygous.forward(gene_embedding_norm, snp_embedding, genotype['homozygous_a1']*snp_mask, dropout=False)
+            heterozygous_effect = self.snp2gene_heterozygous.forward(gene_embedding_norm, snp_embedding,genotype['heterozygous']*snp_mask, dropout=False)
+            gene_embedding = gene_embedding + homozygous_effect + heterozygous_effect
+            return gene_embedding
 
-    def get_snp_effects(self, genotype, transformer):
+
+    def get_snp_effects(self, genotype, transformer, attention=False, score=False):
         snp_indices = genotype['snp']
         batch_size, snp_length = snp_indices.size()
         gene_indices = genotype['gene']
@@ -160,6 +156,7 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             return None, None
         batch_size, gene_length = gene_indices.size()
         #snp_embedding = self.snp_norm(self.snp_linear(self.snp_embedding(snp_indices)))
+        #print(self.snp_embedding.weight.device, snp_indices.device)
         snp_embedding = self.snp_norm(self.snp_embedding(snp_indices))
         gene_embedding = self.gene_norm(self.gene_embedding(gene_indices))
         mask = genotype['mask']
@@ -167,13 +164,24 @@ class SNP2PhenotypeModel(Genotype2PhenotypeTransformer):
             snp_effect_from_embedding = transformer(gene_embedding, snp_embedding, mask)
         else:
             snp_effect_from_embedding = transformer(gene_embedding, snp_embedding, mask)
-        return gene_indices, snp_effect_from_embedding
+        if attention:
+            snp2gene_attention = transformer.get_attention(gene_embedding, snp_embedding, mask)
+            if score:
+                snp2gene_score = transformer.get_score(gene_embedding, snp_embedding, mask)
+                return gene_indices, snp_effect_from_embedding, snp2gene_attention, snp2gene_score
+            else:
+                return gene_indices, snp_effect_from_embedding, snp2gene_attention
+        elif score:
+            snp2gene_score = transformer.get_score(gene_embedding, snp_embedding, mask)
+            return gene_indices, snp_effect_from_embedding, snp2gene_score
+        else:
+            return gene_indices, snp_effect_from_embedding
 
 
-    def get_gene2sys(self, system_embedding, gene_embedding, genotype):
+    def get_gene2sys(self, system_embedding, gene_embedding, gene2sys_mask):
         system_embedding_input = self.sys_norm(system_embedding)
         gene_embedding = self.gene_norm(gene_embedding)
-        gene_effect = self.gene2sys.forward(system_embedding_input, gene_embedding, genotype['gene2sys_mask'])
+        gene_effect = self.gene2sys.forward(system_embedding_input, gene_embedding, gene2sys_mask)
         return system_embedding + gene_effect
 
 

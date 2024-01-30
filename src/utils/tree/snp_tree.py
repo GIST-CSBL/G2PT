@@ -37,10 +37,16 @@ class SNPTreeParser(TreeParser):
             self.snp2gene_mask[self.gene2ind[gene], self.snp2ind[snp]] = 1
             self.gene2snp_dict[self.gene2ind[gene]].append(self.snp2ind[snp])
             self.snp2gene_dict[self.snp2ind[snp]].append(self.gene2ind[gene])
+        self.sys2snp = {}
+        for sys, ind in self.sys2ind.items():
+            genes = self.sys2gene_full_dict[ind]
+            snps = [self.gene2snp_dict[gene] for gene in genes if gene in self.gene2snp_dict.keys()]
+            snps = sum(snps, [])
+            self.sys2snp[ind] = snps
         self.gene2snp_mask = self.snp2gene_mask.T
         print("%d in snp2gene mask" % self.snp2gene_mask.sum())
 
-    def get_snp2gene_mask(self, gene_indices, snp_indices, type_indices=None, CHR=None):
+    def get_snp2gene_embedding_mask(self, gene_indices, snp_indices, type_indices=None, CHR=None):
 
         if len(gene_indices)==0:
             return torch.zeros((self.n_genes, self.n_snps))
@@ -62,6 +68,11 @@ class SNPTreeParser(TreeParser):
             result_mask[:snp2gene_mask.size(0), :snp2gene_mask.size(1)] = snp2gene_mask
             return result_mask
 
+    def get_snp2gene_mask(self, snp_vector):
+        snp2gene_mask = torch.logical_and(torch.tensor(self.snp2gene_mask, dtype=torch.bool),
+                                             snp_vector.unsqueeze(0).expand(self.n_systems, -1).bool())
+        return snp2gene_mask.float()
+
     def get_snps_indices_from_genes(self, gene_indices):
         return list(set(sum([self.gene2snp_dict[gene] for gene in gene_indices], [])))
 
@@ -81,12 +92,22 @@ class SNPTreeParser(TreeParser):
             return self.get_snp2gene_by_chromosome(snp_indices, type_indices=type_indices)
         else:
             embeddings = self.get_snp2gene_embeddings(snp_indices)
-            mask = self.get_snp2gene_mask(embeddings['gene'], embeddings['snp'], type_indices=type_indices)
+            mask = self.get_snp2gene_embedding_mask(embeddings['gene'], embeddings['snp'], type_indices=type_indices)
             return {"snp":embeddings['snp'], 'gene':embeddings['gene'], 'mask':mask}
 
     def get_snp2gene_by_chromosome(self, snp_indices, type_indices=None):
         embeddings = {CHR: self.get_snp2gene_embeddings([snp for snp in snp_indices if snp in self.chr2snp[CHR]])  for CHR in self.chromosomes}
         #print(snp_indices, embeddings)
-        mask = {CHR: self.get_snp2gene_mask(embeddings[CHR]['gene'], embeddings[CHR]['snp'], type_indices=type_indices, CHR=CHR) for CHR in self.chromosomes}
+        mask = {CHR: self.get_snp2gene_embedding_mask(embeddings[CHR]['gene'], embeddings[CHR]['snp'], type_indices=type_indices, CHR=CHR) for CHR in self.chromosomes}
         return {CHR: {"snp":embeddings[CHR]['snp'], "gene":embeddings[CHR]['gene'], 'mask':mask[CHR] } for CHR in self.chromosomes}
 
+    def get_gene2snp_mask(self, snp_vector):
+        gene2snp_mask =  torch.logical_and(torch.tensor(self.snp2gene_mask, dtype=torch.bool),
+                                             snp_vector.unsqueeze(0).expand(self.n_genes, -1).bool())
+        return gene2snp_mask.float()
+
+    def get_sys2snp_ind(self, sys):
+        genes = self.sys2gene_full_dict[sys]
+        snps = [self.gene2snp_dict[gene] for gene in genes if gene in self.gene2snp_dict.keys()]
+        snps = sum(snps, [])
+        return snps

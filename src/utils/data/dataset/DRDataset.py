@@ -7,6 +7,7 @@ import torch
 from src.utils.tree import MutTreeParser
 from random import shuffle
 from torch.nn.utils.rnn import pad_sequence
+import networkx as nx
 
 
 
@@ -66,7 +67,7 @@ class DrugResponseDataset(Dataset):
                                                                    type_indices={1.0: np.where(mut_value.iloc[cell_ind].values == 1.0)[0]})
                              for mut_type, mut_value in self.cell2genotype_dict.items()}
         else:
-            cell_mut_dict = {mut_type: self.tree_parser.get_system2genotype_mask(
+            cell_mut_dict = {mut_type: self.tree_parser.get_genotype2sys_mask(
                 torch.tensor(mut_value.iloc[cell_ind].values, dtype=torch.float32))
                              for mut_type, mut_value in self.cell2genotype_dict.items()}
         #cell_tree_mask = self.cell_tree_mask_dict[cell]
@@ -98,7 +99,7 @@ class DrugResponseDataset(Dataset):
         result_dict['drug'] = self.drug_dict[drug]
         return result_dict
 
-    def get_crispr_cellline(self, drug, i, inhibition=True, cell_feature={}):
+    def get_crispr_celline(self, drug, i, inhibition=True, cell_feature={}):
 
         #for key, value in cell_feature.items():
         #    for i in value:
@@ -116,16 +117,37 @@ class DrugResponseDataset(Dataset):
 
 class DrugResponseCollator(object):
 
-    def __init__(self, tree_parser:MutTreeParser, genotypes, compound_encoder, with_indices=False):
+    def __init__(self, tree_parser:MutTreeParser, genotypes, compound_encoder, with_indices=False, sampling=1., subtree_order=['default']):
         self.tree_parser = tree_parser
         self.genotypes = genotypes
         self.compound_encoder = compound_encoder
         self.compound_type = self.compound_encoder.feature
         self.with_indices = with_indices
+        self.sampling_ratio = sampling
+        self.subtree_order = subtree_order
+        self.nested_subtrees_forward = self.tree_parser.get_nested_subtree_mask(subtree_order, direction='forward')
+        self.nested_subtrees_backward = self.tree_parser.get_nested_subtree_mask(subtree_order, direction='backward')
+        self.sys2gene_mask = torch.tensor(self.tree_parser.sys2gene_mask, dtype=torch.bool)
+
 
     def __call__(self, data):
         result_dict = dict()
         mutation_dict = dict()
+        if self.sampling_ratio!=1.:
+            def find_root_node(G):
+                # This function finds the root node in a directed graph (DAG)
+                for node in G.nodes():
+                    if G.in_degree(node) == 0:
+                        return node
+                return None
+            root_node = find_root_node(self.tree_parser.sys_graph)
+            first_children = list(self.tree_parser.sys_graph.successors(root_node))
+            n_children = int(len(first_children) * self.sampling_ratio)
+            sampled_first_children = np.random.permutation(first_children)[:n_children]
+            sampled_systems = list(set(sum([list(nx.descendants(self.tree_parser.sys_graph, first_child)) for first_child in sampled_first_children], [])))
+            sampled_systems.append(root_node)
+            sampled_sys_inds = sorted([self.tree_parser.sys2ind[sys] for sys in sampled_systems])
+            sampled_gene_inds = sorted(list(set(sum([self.tree_parser.sys2gene_full_dict[sys_ind] for sys_ind in sampled_sys_inds ], []))))
         #result_nested_mask = list()
         for genotype in self.genotypes:
             if self.with_indices:
@@ -138,7 +160,14 @@ class DrugResponseCollator(object):
 
                 mutation_dict[genotype] = embedding_dict
             else:
-                mutation_dict[genotype] = torch.stack([dr['genotype'][genotype] for dr in data])
+                genotype_tensor = [dr['genotype'][genotype] for dr in data]
+                genotype_tensor = torch.stack(genotype_tensor)
+                if self.sampling_ratio!=1.:
+                    #print(sampled_sys_inds)
+                    genotype_tensor = genotype_tensor[:, sampled_sys_inds, :]
+                    #print(sampled_gene_inds)
+                    genotype_tensor = genotype_tensor[:, :, sampled_gene_inds]
+                mutation_dict[genotype] = genotype_tensor#torch.stack(genotype)
         '''
         for i in  range(len(data[0]["nested_system_mask"])):
             result_list = []
@@ -149,6 +178,20 @@ class DrugResponseCollator(object):
 
         result_dict['genotype'] = mutation_dict
         result_dict['drug'] = self.compound_encoder.collate([dr['drug'] for dr in data])
+        if self.sampling_ratio != 1.:
+            result_dict['nested_subtrees_forward'] = self.tree_parser.get_nested_subtree_mask(self.subtree_order, direction='forward', sys_list=sampled_sys_inds)
+            result_dict['nested_subtrees_backward'] =  self.tree_parser.get_nested_subtree_mask(self.subtree_order, direction='backward', sys_list=sampled_sys_inds)
+            sys2gene_mask = self.sys2gene_mask[:, sampled_sys_inds]
+            sys2gene_mask = sys2gene_mask[sampled_gene_inds, :]
+            result_dict['sys2gene_mask'] = sys2gene_mask
+            result_dict['sys_inds'] = torch.tensor(sampled_sys_inds)
+            result_dict['gene_inds'] = torch.tensor(sampled_gene_inds)
+        else:
+            result_dict['nested_subtrees_forward'] = self.nested_subtrees_forward
+            result_dict['nested_subtrees_backward'] = self.nested_subtrees_backward
+            result_dict['sys2gene_mask'] = self.sys2gene_mask
+            result_dict['sys_inds'] = torch.tensor([value for key, value in self.tree_parser.sys2ind.items()])
+            result_dict['gene_inds'] = torch.tensor([value for key, value in self.tree_parser.gene2ind.items()])#sampled_gene_inds
         #result_dict['nested_system_mask'] = result_nested_mask
         if 'response_mean' in data[0].keys():
             result_dict['response_mean'] = torch.tensor([dr['response_mean'] for dr in data])

@@ -148,8 +148,8 @@ def main():
                 addr = os.environ["MASTER_ADDR"]
                 port = os.environ["MASTER_PORT"]
                 print("Address: %s:%s" % (addr, port))
-        else:
-            args.world_size = ngpus_per_node * args.world_size
+            else:
+                args.world_size = ngpus_per_node * args.world_size
         # Use torch.multiprocessing.spawn to launch distributed processes: the
         # main_worker process function
         print("The world size is %d"%args.world_size)
@@ -164,24 +164,24 @@ def main_worker(rank, ngpus_per_node, args):
     node_name = socket.gethostname()
     print(f"Initialize main worker {rank} at node {node_name}")
 
-    if args.gpu is not None:
-        print("Use GPU: {} for training".format(args.gpu))
 
     if args.distributed:
         if args.dist_url == "env://" and args.rank == -1:
             args.rank = int(os.environ["RANK"])
         if args.multiprocessing_distributed:
-
             # For multiprocessing distributed training, rank needs to be the
             # global rank among all the processes
             args.rank = rank
             gpu = rank % ngpus_per_node
+        else:
+            gpu = rank
         print("GPU %d rank is %d" % (gpu, rank))
         timeout = timedelta(hours=5)
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size, rank=args.rank, timeout=timeout)
-        print("GPU %d process initialized" % (gpu))
         torch.cuda.empty_cache()
+    else:
+        gpu = rank
     print("Finish setup main worker", rank)
 
     if torch.cuda.is_available():
@@ -202,26 +202,23 @@ def main_worker(rank, ngpus_per_node, args):
         # For multiprocessing distributed, DistributedDataParallel constructor
         # should always set the single device scope, otherwise,
         # DistributedDataParallel will use all available devices.
-        if args.gpu is not None:
+        if gpu is not None:
             #torch.cuda.set_device(args.gpu)
-            snp2p_model.to(device)
+            snp2p_model = snp2p_model.to(device)
             # When using a single GPU per process and per
             # DistributedDataParallel, we need to divide the batch size
             # ourselves based on the total number of GPUs we have
             args.batch_size = int(args.batch_size / ngpus_per_node)
             args.jobs = int((args.jobs + ngpus_per_node - 1) / ngpus_per_node)
             print(args.batch_size, args.jobs)
-            snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, device_ids=[args.gpu], find_unused_parameters=True)
+            snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, device_ids=[gpu], find_unused_parameters=True)
+            print("Distributed training are set up at GPU %d"%gpu)
         else:
-            print("Distributed training are set up")
-            snp2p_model.to(device)
+            print("Distributed training are set up at GPU %d"%gpu)
+            snp2p_model = snp2p_model.to(device)
             # DistributedDataParallel will divide and allocate batch_size to all
             # available GPUs if device_ids are not set
             snp2p_model = torch.nn.parallel.DistributedDataParallel(snp2p_model, find_unused_parameters=True)
-    elif args.gpu is not None:
-        #torch.cuda.set_device(args.gpu)
-        snp2p_model = snp2p_model.to(device)
-        print("Model is loaded at GPU(%d)" % args.gpu)
     else:
         # DataParallel will divide and allocate batch_size to all available GPUs
         snp2p_model = torch.nn.DataParallel(snp2p_model).to(device)
@@ -266,8 +263,8 @@ def main_worker(rank, ngpus_per_node, args):
 
     train_dataset = pd.read_csv(args.train, header=None, sep='\t')
 
-    snp2p_dataset = SNP2PDataset(train_dataset, args.snp, tree_parser, args.effective_allele)
-    snp2p_collator = SNP2PCollator(tree_parser)
+    snp2p_dataset = SNP2PDataset(train_dataset, args.snp, tree_parser, args.effective_allele, return_indice=False)
+
 
     if args.distributed:
         if args.regression:
@@ -284,14 +281,15 @@ def main_worker(rank, ngpus_per_node, args):
         else:
             snp2p_sampler = None
         interaction_sampler = None
-
+    snp2p_collator = SNP2PCollator(tree_parser, subtree_order=args.subtree_order, sampling=0.3, return_indices=False)
     snp2p_dataloader = DataLoader(snp2p_dataset, batch_size=args.batch_size, collate_fn=snp2p_collator,
                                   num_workers=args.jobs, shuffle=shuffle, sampler=snp2p_sampler)
     if args.val is not None:
         val_dataset = pd.read_csv(args.val, header=None, sep='\t')
-        val_snp2p_dataset = SNP2PDataset(val_dataset, args.snp, tree_parser, args.effective_allele)
+        val_snp2p_dataset = SNP2PDataset(val_dataset, args.snp, tree_parser, args.effective_allele, return_indice=False)
+        snp2p_collator_val = SNP2PCollator(tree_parser, subtree_order=args.subtree_order, sampling=1, return_indices=False)
         val_snp2p_dataloader = DataLoader(val_snp2p_dataset, shuffle=False, batch_size=args.batch_size,
-                                              num_workers=args.jobs, collate_fn=snp2p_collator)
+                                              num_workers=args.jobs, collate_fn=snp2p_collator_val)
     else:
         val_snp2p_dataloader = None
 

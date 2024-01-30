@@ -26,9 +26,9 @@ class DrugResponseModel(Genotype2PhenotypeTransformer):
         self.gene2comp_norm_outer = nn.LayerNorm(hidden_dims, eps=0.1)
 
         self.sys2comp = Genotype2Phenotype(hidden_dims, 1, hidden_dims * 4, inner_norm=self.sys2comp_norm_inner,
-                                           outer_norm=self.sys2comp_norm_outer, dropout=dropout, transform=True)
+                                           outer_norm=self.sys2comp_norm_outer, dropout=0.0, transform=True)
         self.gene2comp = Genotype2Phenotype(hidden_dims, 1, hidden_dims * 4, inner_norm=self.gene2comp_norm_inner,
-                                            outer_norm=self.gene2comp_norm_outer, dropout=dropout, transform=True)
+                                            outer_norm=self.gene2comp_norm_outer, dropout=0.0, transform=True)
         self.sigmoid = nn.Sigmoid()
         self.prediction_norm = nn.LayerNorm(hidden_dims * 2, eps=0.1)
         self.drug_response_predictor = nn.Linear(hidden_dims*2, 1)
@@ -36,9 +36,9 @@ class DrugResponseModel(Genotype2PhenotypeTransformer):
 
 
     def forward(self, genotype_dict, compound, nested_hierarchical_masks_forward, nested_hierarchical_masks_backward,
-                sys2gene_mask, comp2sys_masks=None, sys2cell=True, cell2sys=True, sys2gene=True, with_indices=False):
+                sys2gene_mask, comp2sys_masks=None, sys2cell=True, cell2sys=True, sys2gene=True, with_indices=False,  sys_inds=[], gene_inds=[]):
         batch_size = compound.size(0)
-        system_embedding, mutation_effect = self.get_mut2system(genotype_dict, with_indices=with_indices, batch_size=batch_size)
+        system_embedding, mutation_effect = self.get_mut2system(genotype_dict, with_indices=with_indices, batch_size=batch_size, sys_inds=sys_inds, gene_inds=gene_inds)
         if with_indices:
             system_embedding = system_embedding[:, :-1, :]
         #print(system_embedding[0, :, 0] == system_embedding[1, :, 0])
@@ -47,7 +47,7 @@ class DrugResponseModel(Genotype2PhenotypeTransformer):
         if cell2sys:
             system_embedding = self.get_sys2sys(system_embedding, nested_hierarchical_masks_backward, direction='backward', return_updates=False, with_indices=with_indices)
         root_embedding = system_embedding[:, 0, :]
-        gene_embedding = self.gene_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, :-1, :]
+        gene_embedding = self.gene_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, gene_inds, :]
         if sys2gene:
             gene_embedding = self.get_sys2gene(system_embedding, gene_embedding, sys2gene_mask)
         #print(system_embedding[0, :, 0] == system_embedding[1, :, 0])
@@ -55,7 +55,7 @@ class DrugResponseModel(Genotype2PhenotypeTransformer):
         prediction = self.prediction(self.drug_response_predictor, compound_embedding, system_embedding, gene_embedding)
         return prediction
 
-    def get_mut2system(self, genotype_dict, with_indices=False, batch_size=1):
+    def get_mut2system(self, genotype_dict, with_indices=False, batch_size=1, sys_inds=[], gene_inds=[]):
         if with_indices:
             sys_indices, mut_effects = [], []
             for genotype in self.genotypes:
@@ -76,10 +76,10 @@ class DrugResponseModel(Genotype2PhenotypeTransformer):
             return system_embedding + mut_effect, mut_effect
         else:
             mutation_effects = {}
-            system_embedding = self.sys_norm(self.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, :-1, :])
-            gene_embedding = self.gene_norm(self.gene_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, :-1, :])
+            system_embedding = self.sys_norm(self.system_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, sys_inds, :])
+            gene_embedding = self.gene_norm(self.gene_embedding.weight.unsqueeze(0).expand(batch_size, -1, -1)[:, gene_inds, :])
             gene_mask = self.dropout(torch.ones_like(genotype_dict[self.genotypes[0]].sum(0).sum(0)))
-            gene_mask = gene_mask.unsqueeze(0).unsqueeze(1).expand(batch_size, self.n_systems, -1)
+            gene_mask = gene_mask.unsqueeze(0).unsqueeze(1).expand(batch_size, system_embedding.size(1), -1)
             for genotype in self.genotypes:
                 #print(system_embedding.size(), gene_embedding.size(), genotype_dict[genotype].size())
                 mutation_effect = self.mut2sys[genotype].forward(system_embedding, gene_embedding,

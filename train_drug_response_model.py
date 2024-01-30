@@ -196,33 +196,27 @@ def main_worker(gpu, ngpus_per_node, args):
         compound_model = compound_trainer.train(args.compound_epochs)
         drug_response_model = DrugResponseModel(tree_parser, list(args.genotypes.keys()),
                                                 args.hidden_dims, compound_model, dropout=args.dropout)
-    fix_embedding = False
+    fix_system = False
     if args.system_embedding:
         system_embedding_dict = np.load(args.system_embedding, allow_pickle=True).item()
-        print("Loading System Embeddings :", args.system_embedding)
+        #print("Loading System Embeddings :", args.system_embedding)
         #if "NEST" not in NeST_embedding_dict.keys():
         #    print("NEST root term does not exist!")
         #    system_embedding_dict["NEST"] = np.mean(
         #        np.stack([system_embedding_dict["NEST:1"], NeST_embedding_dict["NEST:2"], NeST_embedding_dict["NEST:3"]],
         #                 axis=0), axis=0, keepdims=False)
         system_embeddings = np.stack(
-            [system_embedding_dict[key] for key, value in sorted(tree_parser.sys2ind.items(), key=lambda a: a[1])] + [np.zeros(args.hidden_dims)])
-        system_embeddings = system_embeddings.astype(np.float32)
-        system_embeddings = torch.from_numpy(system_embeddings)
-        drug_response_model.system_embedding.weight = nn.Parameter(system_embeddings)
-        drug_response_model.system_embedding.weight.requires_grad = False
+            [system_embedding_dict[key] for key, value in sorted(tree_parser.sys2ind.items(), key=lambda a: a[1])])
+        drug_response_model.system_embedding.weight = nn.Parameter(torch.tensor(system_embeddings))
         print(drug_response_model.system_embedding.weight)
-        fix_embedding = False
+        drug_response_model.system_embedding.weight.requires_grad = False
+        fix_system = True
     if args.gene_embedding:
         gene_embedding_dict = np.load(args.gene_embedding, allow_pickle=True).item()
         print("Loading Gene Embeddings :", args.gene_embedding)
-        gene_embeddings = np.stack([gene_embedding_dict[key] for key, value in sorted(tree_parser.gene2ind.items(), key=lambda a: a[1])] + [np.zeros(args.hidden_dims)])
-        gene_embeddings = gene_embeddings.astype(np.float32)
-        gene_embeddings = torch.from_numpy(gene_embeddings)
-        drug_response_model.gene_embedding.weight = nn.Parameter(gene_embeddings)
-        drug_response_model.gene_embedding.weight.requires_grad = False
-        print(drug_response_model.gene_embedding.weight)
-        fix_embedding = False
+        gene_embeddings = np.stack([gene_embedding_dict[key] for key, value in sorted(tree_parser.gene2ind.items(), key=lambda a: a[1])])
+        drug_response_model.gene_embedding.weight = nn.Parameter(torch.tensor(gene_embeddings))
+        #drug_response_model.gene_embedding.weight.requires_grad = False
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
@@ -281,14 +275,14 @@ def main_worker(gpu, ngpus_per_node, args):
         val_dataset = pd.read_csv(args.val, header=None, sep='\t')
         val_drug_response_dataset = DrugResponseDataset(val_dataset, args.cell2id, args.genotypes, compound_encoder,
                                                     tree_parser)
-        drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder)
+        drug_response_collator_val = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder,  sampling=1, subtree_order=args.subtree_order)
 
         val_drug_response_dataloader = DataLoader(val_drug_response_dataset, shuffle=False, batch_size=args.batch_size,
-                                              num_workers=args.jobs, collate_fn=drug_response_collator)
+                                              num_workers=args.jobs, collate_fn=drug_response_collator_val)
     else:
         val_drug_response_dataloader = None
 
-    drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder)
+    drug_response_collator = DrugResponseCollator(tree_parser, list(args.genotypes.keys()), compound_encoder, sampling=0.5, subtree_order=args.subtree_order)
     '''
     if args.model is not None:
         drug_response_dataloader = DataLoader(drug_response_dataset, batch_size=args.batch_size,
@@ -322,7 +316,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
 
     drug_response_trainer = DrugResponseTrainer(drug_response_model, drug_response_dataloader_drug, drug_response_dataloader_cellline, device, args,
-                                                validation_dataloader=val_drug_response_dataloader, fix_embedding=fix_embedding)
+                                                validation_dataloader=val_drug_response_dataloader, fix_embedding=fix_system)
     drug_response_trainer.train(args.epochs, args.out)
 
 
