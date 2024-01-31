@@ -199,24 +199,21 @@ def main_worker(gpu, ngpus_per_node, args):
     fix_system = False
     if args.system_embedding:
         system_embedding_dict = np.load(args.system_embedding, allow_pickle=True).item()
-        #print("Loading System Embeddings :", args.system_embedding)
-        #if "NEST" not in NeST_embedding_dict.keys():
-        #    print("NEST root term does not exist!")
-        #    system_embedding_dict["NEST"] = np.mean(
-        #        np.stack([system_embedding_dict["NEST:1"], NeST_embedding_dict["NEST:2"], NeST_embedding_dict["NEST:3"]],
-        #                 axis=0), axis=0, keepdims=False)
         system_embeddings = np.stack(
             [system_embedding_dict[key] for key, value in sorted(tree_parser.sys2ind.items(), key=lambda a: a[1])])
+        system_embeddings = np.concatenate([system_embeddings, np.zeros((1, args.hidden_dims))], axis=0)
         drug_response_model.system_embedding.weight = nn.Parameter(torch.tensor(system_embeddings))
         print(drug_response_model.system_embedding.weight)
         drug_response_model.system_embedding.weight.requires_grad = False
-        fix_system = True
+        fix_embedding = True
     if args.gene_embedding:
         gene_embedding_dict = np.load(args.gene_embedding, allow_pickle=True).item()
         print("Loading Gene Embeddings :", args.gene_embedding)
         gene_embeddings = np.stack([gene_embedding_dict[key] for key, value in sorted(tree_parser.gene2ind.items(), key=lambda a: a[1])])
+        gene_embeddings = np.concatenate([gene_embeddings, np.zeros((1, args.hidden_dims))], axis=0)
         drug_response_model.gene_embedding.weight = nn.Parameter(torch.tensor(gene_embeddings))
-        #drug_response_model.gene_embedding.weight.requires_grad = False
+        drug_response_model.gene_embedding.weight.requires_grad = False
+        fix_embedding = True
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
@@ -316,7 +313,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
 
     drug_response_trainer = DrugResponseTrainer(drug_response_model, drug_response_dataloader_drug, drug_response_dataloader_cellline, device, args,
-                                                validation_dataloader=val_drug_response_dataloader, fix_embedding=fix_system)
+                                                validation_dataloader=val_drug_response_dataloader, fix_embedding=fix_embedding)
     drug_response_trainer.train(args.epochs, args.out)
 
 
